@@ -61,7 +61,8 @@ UPDATE_CHANNEL = 'https://t.me/peaceerra' #yeha chnl link dalo''
 FORCE_JOIN_CHANNELS = {
 "@peaceerra":"𝐉𝐎𝐈𝐍",
 "@delete_py":"𝐉𝐎𝐈𝐍",
-"@peacevouch":"𝐉𝐎𝐈𝐍"
+"@peacevouch":"𝐉𝐎𝐈𝐍",
+"@deleteerra":"𝐉𝐎𝐈𝐍"
 }
 
 # Folder setup - using absolute paths
