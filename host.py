@@ -59,8 +59,8 @@ ADMIN_ID = 8399044122 #yeha koi admin ya tumhara chat id dalo
 YOUR_USERNAME = '@ebfux' #yeha tumhra username dala
 UPDATE_CHANNEL = 'https://t.me/peaceerra' #yeha chnl link dalo''
 FORCE_JOIN_CHANNELS = {
-"@peaceera":"𝐉𝐎𝐈𝐍",
-"https://t.me/+tFe-z95dh2I5ZTg1":"𝐉𝐎𝐈𝐍",
+"@peaceerra":"𝐉𝐎𝐈𝐍",
+"@delete_py":"𝐉𝐎𝐈𝐍",
 "@peacevouch":"𝐉𝐎𝐈𝐍"
 }
 
