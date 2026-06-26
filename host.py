@@ -950,6 +950,109 @@ def kill_process_tree(process_info):
 
 # --- Automatic Package Installation & Script Running ---
 
+
+def extract_python_dependencies(script_path):
+    try:
+        with open(script_path, 'r', encoding='utf-8', errors='ignore') as f:
+            tree = ast.parse(f.read())
+        imports = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    imports.add(alias.name.split('.')[0])
+            elif isinstance(node, ast.ImportFrom):
+                if node.module:
+                    imports.add(node.module.split('.')[0])
+        stdlib = set(sys.stdlib_module_names) if hasattr(sys, 'stdlib_module_names') else set()
+        stdlib.update(['os', 'sys', 'time', 'datetime', 'json', 're', 'threading', 'subprocess', 'logging', 'math', 'random', 'socket', 'asyncio', 'typing', 'io', 'zipfile', 'shutil', 'struct', 'sqlite3', 'tempfile', 'atexit', 'signal', 'psutil', 'hashlib', 'mimetypes'])
+        return [m for m in imports if m not in stdlib and m != '']
+    except Exception as e:
+        logger.error(f"Error extracting dependencies from {script_path}: {e}")
+        return []
+
+def extract_js_dependencies(script_path):
+    try:
+        with open(script_path, 'r', encoding='utf-8', errors='ignore') as f:
+            content = f.read()
+        imports = set()
+        reqs = re.findall(r"require\(['\"]([^'\"]+)['\"]\)", content)
+        imps = re.findall(r"from\s+['\"]([^'\"]+)['\"]", content)
+        for m in reqs + imps:
+            if not m.startswith('.') and not m.startswith('/'):
+                if m.startswith('@'):
+                    parts = m.split('/')
+                    if len(parts) >= 2: imports.add(f"{parts[0]}/{parts[1]}")
+                else:
+                    imports.add(m.split('/')[0])
+        builtins = {'fs', 'path', 'http', 'https', 'crypto', 'os', 'events', 'util', 'stream', 'net', 'tls', 'buffer', 'child_process', 'cluster', 'dgram', 'dns', 'perf_hooks', 'punycode', 'querystring', 'readline', 'repl', 'string_decoder', 'timers', 'tty', 'url', 'v8', 'vm', 'worker_threads', 'zlib'}
+        return [m for m in imports if m not in builtins]
+    except Exception as e:
+        logger.error(f"Error extracting JS dependencies from {script_path}: {e}")
+        return []
+
+def check_and_install_python_deps(modules, message):
+    packages_to_install = set()
+    for mod in modules:
+        pkg = TELEGRAM_MODULES.get(mod.lower(), mod)
+        if mod.lower() == "pil": pkg = "pillow"
+        
+        # Fast check
+        if subprocess.run([sys.executable, '-m', 'pip', 'show', pkg], capture_output=True).returncode != 0:
+            packages_to_install.add(pkg)
+                
+    if not packages_to_install:
+        return True, "Already installed"
+        
+    with dependency_lock:
+        still_missing = set()
+        for pkg in packages_to_install:
+            if subprocess.run([sys.executable, '-m', 'pip', 'show', pkg], capture_output=True).returncode != 0:
+                still_missing.add(pkg)
+                
+        if not still_missing:
+            return True, "Already installed by another thread"
+
+        bot.reply_to(message, f"📦 Installing missing Python packages: `{', '.join(still_missing)}`...", parse_mode='Markdown')
+        cmd = [sys.executable, '-m', 'pip', 'install'] + list(still_missing)
+        logger.info(f"Running batch pip install: {' '.join(cmd)}")
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if res.returncode == 0:
+            return True, ""
+        else:
+            logger.error(f"Pip install failed:\n{res.stderr}")
+            return False, res.stderr or res.stdout
+
+def check_and_install_npm_deps(modules, user_folder, message):
+    packages_to_install = set()
+    for mod in modules:
+        if subprocess.run(['npm', 'ls', mod], cwd=user_folder, capture_output=True).returncode != 0:
+            packages_to_install.add(mod)
+            
+    if not packages_to_install:
+        return True, "Already installed"
+        
+    with dependency_lock:
+        still_missing = set()
+        for mod in packages_to_install:
+            if subprocess.run(['npm', 'ls', mod], cwd=user_folder, capture_output=True).returncode != 0:
+                still_missing.add(mod)
+                
+        if not still_missing:
+            return True, "Already installed by another thread"
+
+        bot.reply_to(message, f"📦 Installing missing Node.js packages locally: `{', '.join(still_missing)}`...", parse_mode='Markdown')
+        cmd = ['npm', 'install', '--no-audit', '--no-fund'] + list(still_missing)
+        logger.info(f"Running batch npm install: {' '.join(cmd)} in {user_folder}")
+        res = subprocess.run(cmd, cwd=user_folder, capture_output=True, text=True)
+        
+        if res.returncode == 0:
+            return True, ""
+        else:
+            logger.error(f"NPM install failed:\n{res.stderr}")
+            return False, res.stderr or res.stdout
+
+
 def attempt_install_pip(module_name, message):
 
     package_name = TELEGRAM_MODULES.get(
@@ -1180,152 +1283,46 @@ def run_script(script_path, script_owner_id, user_folder, file_name, message_obj
             remove_user_file_db(script_owner_id, file_name)
             return
 
-        # ================= PRE CHECK =================
-
-        if attempt == 1:
-
-            check_command = [sys.executable, script_path]
-
-            logger.info(
-                f"Running Python pre-check: {' '.join(check_command)}"
+        # ================= PRE CHECK & DEPENDENCY INSTALL =================
+        logger.info(f"Scanning Python imports for {file_name}...")
+        deps = extract_python_dependencies(script_path)
+        if deps:
+            logger.info(f"Found {len(deps)} imports: {deps}")
+            success, err_msg = check_and_install_python_deps(deps, message_obj_for_reply)
+            if not success:
+                bot.reply_to(message_obj_for_reply, f"❌ Install failed:\n```{err_msg[:500]}```", parse_mode='Markdown')
+                return
+        
+        check_command = [sys.executable, script_path]
+        logger.info(f"Running Python verification: {' '.join(check_command)}")
+        check_proc = None
+        try:
+            check_proc = subprocess.Popen(
+                check_command, cwd=user_folder, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, encoding='utf-8', errors='replace',
+                env={**os.environ, "PYTHONIOENCODING": "utf-8"}
             )
-
-            check_proc = None
-
-            try:
-
-                check_proc = subprocess.Popen(
-                    check_command,
-                    cwd=user_folder,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    encoding='utf-8',
-                    errors='replace',
-                    env={
-                        **os.environ,
-                        "PYTHONIOENCODING": "utf-8"
-                    }
-                )
-
-                stdout, stderr = check_proc.communicate(timeout=1.5)
-
-                return_code = check_proc.returncode
-
-                logger.info(
-                    f"Python Pre-check RC: {return_code} | "
-                    f"STDERR: {stderr[:200]}"
-                )
-
-                # ================= MODULE CHECK =================
-
-                if return_code != 0 and stderr:
-
-                    match_py = re.search(
-                        r"ModuleNotFoundError: No module named '(.+?)'",
-                        stderr
-                    )
-
-                    if match_py:
-
-                        module_name = match_py.group(1).strip()
-
-                        logger.info(
-                            f"Detected missing Python module: {module_name}"
-                        )
-
-                        if attempt_install_pip(
-                            module_name,
-                            message_obj_for_reply
-                        ):
-
-                            bot.reply_to(
-                                message_obj_for_reply,
-                                f"🔄 Retrying '{file_name}'..."
-                            )
-
-                            time.sleep(2)
-
-                            threading.Thread(
-                                target=run_script,
-                                args=(
-                                    script_path,
-                                    script_owner_id,
-                                    user_folder,
-                                    file_name,
-                                    message_obj_for_reply,
-                                    attempt + 1
-                                )
-                            ).start()
-
-                            return
-
-                        else:
-
-                            bot.reply_to(
-                                message_obj_for_reply,
-                                f"❌ Install failed for '{module_name}'"
-                            )
-
-                            return
-
-                    else:
-
-                        error_summary = stderr[:500]
-
-                        bot.reply_to(
-                            message_obj_for_reply,
-                            f"❌ Error in script pre-check:\n```{error_summary}```",
-                            parse_mode='Markdown'
-                        )
-
-                        return
-
-            except subprocess.TimeoutExpired:
-
-                logger.info(
-                    "Pre-check timeout -> imports likely OK"
-                )
-
-                if check_proc and check_proc.poll() is None:
-                    kill_process_tree({'process': check_proc, 'script_key': script_key + '_precheck'})
-
-            except FileNotFoundError:
-
-                logger.error(
-                    f"Python interpreter not found: {sys.executable}"
-                )
-
-                bot.reply_to(
-                    message_obj_for_reply,
-                    f"❌ Python interpreter not found."
-                )
-
+            stdout, stderr = check_proc.communicate(timeout=2.0)
+            return_code = check_proc.returncode
+            if return_code != 0 and stderr:
+                match_py = re.search(r"ModuleNotFoundError: No module named '(.+?)'", stderr)
+                if match_py:
+                    missing = match_py.group(1).strip()
+                    logger.error(f"Verification failed! Missing: {missing}")
+                    bot.reply_to(message_obj_for_reply, f"❌ Verification failed. Missing module '{missing}'.")
+                else:
+                    bot.reply_to(message_obj_for_reply, f"❌ Error in script pre-check:\n```{stderr[:500]}```", parse_mode='Markdown')
                 return
-
-            except Exception as e:
-
-                logger.error(
-                    f"Pre-check error: {e}",
-                    exc_info=True
-                )
-
-                bot.reply_to(
-                    message_obj_for_reply,
-                    f"❌ Pre-check error:\n{e}"
-                )
-
-                return
-
-            finally:
-
-                if check_proc and check_proc.poll() is None:
-
-                    logger.warning(
-                        f"Killing stuck pre-check process {check_proc.pid}"
-                    )
-
-                    kill_process_tree({'process': check_proc, 'script_key': script_key + '_precheck'})
+        except subprocess.TimeoutExpired:
+            logger.info("Verification timeout -> imports OK")
+            if check_proc and check_proc.poll() is None:
+                kill_process_tree({'process': check_proc, 'script_key': script_key + '_precheck'})
+        except Exception as e:
+            bot.reply_to(message_obj_for_reply, f"❌ Pre-check error:\n{e}")
+            return
+        finally:
+            if check_proc and check_proc.poll() is None:
+                kill_process_tree({'process': check_proc, 'script_key': script_key + '_precheck'})
 
         # ================= START LONG RUN =================
 
@@ -1531,154 +1528,48 @@ def run_js_script(script_path, script_owner_id, user_folder, file_name, message_
 
             return
 
-        # ================= PRE CHECK =================
+        # ================= PRE CHECK & DEPENDENCY INSTALL =================
+        logger.info(f"Scanning JS imports for {file_name}...")
+        deps = extract_js_dependencies(script_path)
+        if deps:
+            logger.info(f"Found {len(deps)} JS imports: {deps}")
+            success, err_msg = check_and_install_npm_deps(deps, user_folder, message_obj_for_reply)
+            if not success:
+                bot.reply_to(message_obj_for_reply, f"❌ Install failed:\n```{err_msg[:500]}```", parse_mode='Markdown')
+                return
 
-        if attempt == 1:
-
-            check_command = ['node', script_path]
-
-            logger.info(
-                f"Running JS pre-check: {' '.join(check_command)}"
+        check_command = ['node', script_path]
+        logger.info(f"Running JS verification: {' '.join(check_command)}")
+        check_proc = None
+        try:
+            check_proc = subprocess.Popen(
+                check_command, cwd=user_folder, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, encoding='utf-8', errors='replace',
+                env={**os.environ, "PYTHONIOENCODING": "utf-8"}
             )
-
-            check_proc = None
-
-            try:
-
-                check_proc = subprocess.Popen(
-                    check_command,
-                    cwd=user_folder,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    encoding='utf-8',
-                    errors='replace',
-                    env={
-                        **os.environ,
-                        "PYTHONIOENCODING": "utf-8"
-                    }
-                )
-
-                stdout, stderr = check_proc.communicate(timeout=5)
-
-                return_code = check_proc.returncode
-
-                logger.info(
-                    f"JS Pre-check RC: {return_code} | "
-                    f"STDERR: {stderr[:200]}"
-                )
-
-                # ================= MODULE CHECK =================
-
-                if return_code != 0 and stderr:
-
-                    match_js = re.search(
-                        r"Cannot find module '(.+?)'",
-                        stderr
-                    )
-
-                    if match_js:
-
-                        module_name = match_js.group(1).strip()
-
-                        # Skip relative paths
-                        if not module_name.startswith('.') and not module_name.startswith('/'):
-
-                            logger.info(
-                                f"Detected missing Node module: {module_name}"
-                            )
-
-                            if attempt_install_npm(
-                                module_name,
-                                user_folder,
-                                message_obj_for_reply
-                            ):
-
-                                bot.reply_to(
-                                    message_obj_for_reply,
-                                    f"🔄 Retrying '{file_name}'..."
-                                )
-
-                                time.sleep(2)
-
-                                threading.Thread(
-                                    target=run_js_script,
-                                    args=(
-                                        script_path,
-                                        script_owner_id,
-                                        user_folder,
-                                        file_name,
-                                        message_obj_for_reply,
-                                        attempt + 1
-                                    )
-                                ).start()
-
-                                return
-
-                            else:
-
-                                bot.reply_to(
-                                    message_obj_for_reply,
-                                    f"❌ Failed to install '{module_name}'"
-                                )
-
-                                return
-
-                    error_summary = stderr[:500]
-
-                    bot.reply_to(
-                        message_obj_for_reply,
-                        f"❌ JS Script Error:\n```{error_summary}```",
-                        parse_mode='Markdown'
-                    )
-
-                    return
-
-            except subprocess.TimeoutExpired:
-
-                logger.info(
-                    "JS Pre-check timeout -> imports likely OK"
-                )
-
-                if check_proc and check_proc.poll() is None:
-                    check_proc.kill()
-                    check_proc.communicate()
-
-            except FileNotFoundError:
-
-                logger.error("Node.js not found")
-
-                bot.reply_to(
-                    message_obj_for_reply,
-                    "❌ Node.js not installed."
-                )
-
+            stdout, stderr = check_proc.communicate(timeout=5.0)
+            return_code = check_proc.returncode
+            if return_code != 0 and stderr:
+                match_js = re.search(r"Cannot find module '(.+?)'", stderr)
+                if match_js:
+                    missing = match_js.group(1).strip()
+                    logger.error(f"Verification failed! Missing JS module: {missing}")
+                    bot.reply_to(message_obj_for_reply, f"❌ Verification failed. Missing module '{missing}'.")
+                else:
+                    bot.reply_to(message_obj_for_reply, f"❌ JS Script Error:\n```{stderr[:500]}```", parse_mode='Markdown')
                 return
-
-            except Exception as e:
-
-                logger.error(
-                    f"JS pre-check error: {e}",
-                    exc_info=True
-                )
-
-                bot.reply_to(
-                    message_obj_for_reply,
-                    f"❌ JS pre-check error:\n{e}"
-                )
-
-                return
-
-            finally:
-
-                if check_proc and check_proc.poll() is None:
-
-                    logger.warning(
-                        f"Killing stuck JS check process {check_proc.pid}"
-                    )
-
-                    check_proc.kill()
-                    check_proc.communicate()
+        except subprocess.TimeoutExpired:
+            logger.info("JS Verification timeout -> imports OK")
+            if check_proc and check_proc.poll() is None:
+                check_proc.kill()
+                check_proc.communicate()
+        except Exception as e:
+            bot.reply_to(message_obj_for_reply, f"❌ JS Pre-check error:\n{e}")
+            return
+        finally:
+            if check_proc and check_proc.poll() is None:
+                check_proc.kill()
+                check_proc.communicate()
 
         # ================= START LONG RUN =================
 
@@ -1841,76 +1732,64 @@ def run_js_script(script_path, script_owner_id, user_folder, file_name, message_
             del bot_scripts[script_key]
 
 # --- Map Telegram import names to actual PyPI package names ---
+import ast
+import importlib.util
+
+dependency_lock = threading.Lock()
+
 TELEGRAM_MODULES = {
     'telebot': 'pyTelegramBotAPI',
     'telegram': 'python-telegram-bot',
     'python_telegram_bot': 'python-telegram-bot',
     'aiogram': 'aiogram',
     'pyrogram': 'pyrogram',
+    'pyrofork': 'pyrofork',
     'telethon': 'telethon',
     'telethon.sync': 'telethon',
-    'from telethon.sync import telegramclient': 'telethon',
     'telepot': 'telepot',
     'pytg': 'pytg',
     'tgcrypto': 'tgcrypto',
     'telegram_upload': 'telegram-upload',
     'telegram_send': 'telegram-send',
-    'telegram_text': 'telegram-text',
     'mtproto': 'telegram-mtproto',
     'tl': 'telethon',
-    'telegram_utils': 'telegram-utils',
-    'telegram_logger': 'telegram-logger',
-    'telegram_handlers': 'python-telegram-handlers',
-    'telegram_redis': 'telegram-redis',
-    'telegram_sqlalchemy': 'telegram-sqlalchemy',
-    'telegram_payment': 'telegram-payment',
-    'telegram_shop': 'telegram-shop-sdk',
-    'pytest_telegram': 'pytest-telegram',
-    'telegram_debug': 'telegram-debug',
-    'telegram_scraper': 'telegram-scraper',
-    'telegram_analytics': 'telegram-analytics',
-    'telegram_nlp': 'telegram-nlp-toolkit',
-    'telegram_ai': 'telegram-ai',
-    'telegram_api': 'telegram-api-client',
-    'telegram_web': 'telegram-web-integration',
-    'telegram_games': 'telegram-games',
-    'telegram_quiz': 'telegram-quiz-bot',
-    'telegram_ffmpeg': 'telegram-ffmpeg',
-    'telegram_media': 'telegram-media-utils',
-    'telegram_2fa': 'telegram-twofa',
-    'telegram_crypto': 'telegram-crypto-bot',
-    'telegram_i18n': 'telegram-i18n',
-    'telegram_translate': 'telegram-translate',
-    'bs4': 'beautifulsoup4',
-    'requests': 'requests',
-    'pillow': 'Pillow',
+    'pil': 'Pillow',
+    'pil.image': 'Pillow',
+    'crypto': 'pycryptodome',
+    'crypto.cipher': 'pycryptodome',
     'cv2': 'opencv-python',
     'yaml': 'PyYAML',
     'dotenv': 'python-dotenv',
     'dateutil': 'python-dateutil',
-    'pandas': 'pandas',
+    'bs4': 'beautifulsoup4',
+    'requests': 'requests',
     'numpy': 'numpy',
+    'pandas': 'pandas',
     'flask': 'Flask',
-    'django': 'Django',
-    'sqlalchemy': 'SQLAlchemy',
-    'asyncio': None,
-    'json': None,
-    'datetime': None,
-    'os': None,
-    'sys': None,
-    're': None,
-    'time': None,
-    'math': None,
-    'random': None,
-    'logging': None,
-    'threading': None,
-    'subprocess': None,
-    'zipfile': None,
-    'tempfile': None,
-    'shutil': None,
-    'sqlite3': None,
+    'fastapi': 'fastapi',
+    'quart': 'quart',
+    'uvicorn': 'uvicorn',
+    'aiohttp': 'aiohttp',
+    'httpx': 'httpx',
+    'motor': 'motor',
+    'pymongo': 'pymongo',
+    'redis': 'redis',
+    'mysql.connector': 'mysql-connector-python',
+    'mysqldb': 'mysqlclient',
+    'rich': 'rich',
+    'faker': 'Faker',
+    'colorama': 'colorama',
+    'pyfiglet': 'pyfiglet',
     'psutil': 'psutil',
-    'atexit': None
+    'jwt': 'PyJWT',
+    'sqlalchemy': 'SQLAlchemy',
+    'discord': 'discord.py',
+    'nextcord': 'nextcord',
+    'disnake': 'disnake',
+    'google.generativeai': 'google-generativeai',
+    'openai': 'openai',
+    'boto3': 'boto3',
+    'tweepy': 'tweepy'
 }
 # --- End Automatic Package Installation & Script Running ---
 
