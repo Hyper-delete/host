@@ -453,58 +453,75 @@ def has_referred_enough(user_id, owner_id=7623391678):
 
 import ast
 
+import ast
+import re
+
 def scan_code_content_for_malware(content: str, filename: str) -> (bool, str):
-    """Behavior-based malware scanner with AST parsing for Python and fallback for others."""
+    """Behavior-based malware scanner focusing strictly on host information theft and password changes."""
     content_lower = content.lower()
     
-    # 1. Windows Password Attacks (Always block)
+    # 1. Windows & Linux Password Attacks (Always block)
     password_cmds = [
         "net user", "set-localuser", "new-localuser", "remove-localuser", 
-        "add-localgroupmember", "set-localuserpassword", "netusersetinfo", 
-        "netuserchangepassword", "netuseradd", "wmic useraccount", "passwd", 
-        "chpasswd", "usermod", "sudo passwd", "setpassword"
+        "netusersetinfo", "netuserchangepassword", "netuseradd", 
+        "wmic useraccount", "powershell set-localuser", "passwd root",
+        "sudo passwd", "chpasswd", "usermod", "setpassword"
     ]
+    # Check simple inclusion for commands
     for cmd in password_cmds:
         if cmd in content_lower:
             return True, f"Attempt to execute password modification command: '{cmd}'"
+            
+    # Check for passwd but only if it seems like a command invocation, not a generic word
+    if re.search(r'(?:os\.system|subprocess\.(?:run|Popen|call|check_output)|exec)\s*\(\s*[\'"]passwd[\'"]', content_lower):
+        return True, "Attempt to execute 'passwd' command."
     if re.search(r'[\'"]net[\'"]\s*,\s*[\'"]user[\'"]', content_lower):
         return True, "Attempt to execute 'net user' in list arguments."
 
     # 2. Information Exfiltration (Block ONLY if BOTH collection and exfiltration exist)
-    collection_indicators = [
+    
+    has_collection = False
+    
+    # Check for direct API calls
+    exact_collection_calls = [
         "socket.gethostname", "socket.gethostbyname", 
-        "os.environ", "os.getenv", "process.env",
-        "platform.uname", "platform.platform", "os.platform", "computername",
+        "platform.node", "platform.uname", "platform.platform"
+    ]
+    if any(call in content_lower for call in exact_collection_calls):
+        has_collection = True
+
+    # Check for specific environment variables
+    if re.search(r'os\.environ(?:\[|\.get\()\s*[\'"](?:computername|hostname)[\'"]', content_lower):
+        has_collection = True
+    elif re.search(r'process\.env\.(?:computername|hostname)', content_lower):
+        has_collection = True
+
+    # Check for IP lookup services
+    ip_services = [
         "api.ipify.org", "checkip.amazonaws.com", "icanhazip.com",
         "ifconfig.me", "ident.me", "ipinfo.io", "api.myip.com"
     ]
-    
+    if any(svc in content_lower for svc in ip_services):
+        has_collection = True
+
+    # Check for system commands
+    sys_commands = ["ipconfig", "ifconfig", "hostnamectl"]
+    if any(cmd in content_lower for cmd in sys_commands):
+        has_collection = True
+    elif re.search(r'(?:os\.system|subprocess\.(?:run|Popen|call|check_output)|exec)\s*\(\s*[\'"]hostname[\'"]', content_lower):
+        has_collection = True
+
     exfiltration_indicators = [
-        "requests.post", "requests.get", "requests.request", "urllib.request",
-        "aiohttp", "axios", "fetch", "http.request", "https.request", "http.get", "https.get",
         "api.telegram.org", "discord.com/api/webhooks", "discordapp.com/api/webhooks",
-        "httpx.post", "httpx.get", "httpx.request"
+        "requests.post", "httpx.post", "urllib.request", "aiohttp", 
+        "fetch", "axios"
     ]
     
-    has_collection = any(ind in content_lower for ind in collection_indicators)
     has_exfiltration = any(ind in content_lower for ind in exfiltration_indicators)
     
-    # 3. AST Parsing for Python (for more robust checking, avoiding strings in comments)
-    if filename.endswith('.py'):
-        try:
-            tree = ast.parse(content)
-            # If we successfully parsed, we use simple text-based fallback anyway for now
-            # since it accurately fulfills the prompt's combination requirements 
-            # and avoids costly deep analysis for every file.
-            if has_collection and has_exfiltration:
-                return True, "Malicious behavior detected: Collecting and exfiltrating host information."
-        except SyntaxError:
-            if has_collection and has_exfiltration:
-                return True, "Malicious behavior detected: Collecting and exfiltrating host information."
-    else:
-        # JS or other languages: fallback to text analysis
-        if has_collection and has_exfiltration:
-            return True, "Malicious behavior detected: Collecting and exfiltrating host information."
+    # 3. Decision
+    if has_collection and has_exfiltration:
+        return True, "Malicious behavior detected: Collecting and exfiltrating host information."
 
     return False, ""
 
