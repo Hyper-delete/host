@@ -1190,7 +1190,7 @@ def run_script(script_path, script_owner_id, user_folder, file_name, message_obj
                     }
                 )
 
-                stdout, stderr = check_proc.communicate(timeout=5)
+                stdout, stderr = check_proc.communicate(timeout=1.5)
 
                 return_code = check_proc.returncode
 
@@ -1270,8 +1270,7 @@ def run_script(script_path, script_owner_id, user_folder, file_name, message_obj
                 )
 
                 if check_proc and check_proc.poll() is None:
-                    check_proc.kill()
-                    check_proc.communicate()
+                    kill_process_tree({'process': check_proc, 'script_key': script_key + '_precheck'})
 
             except FileNotFoundError:
 
@@ -1308,8 +1307,7 @@ def run_script(script_path, script_owner_id, user_folder, file_name, message_obj
                         f"Killing stuck pre-check process {check_proc.pid}"
                     )
 
-                    check_proc.kill()
-                    check_proc.communicate()
+                    kill_process_tree({'process': check_proc, 'script_key': script_key + '_precheck'})
 
         # ================= START LONG RUN =================
 
@@ -1329,7 +1327,7 @@ def run_script(script_path, script_owner_id, user_folder, file_name, message_obj
 
             log_file = open(
                 log_file_path,
-                'w',
+                'a',
                 encoding='utf-8',
                 errors='replace'
             )
@@ -1682,7 +1680,7 @@ def run_js_script(script_path, script_owner_id, user_folder, file_name, message_
 
             log_file = open(
                 log_file_path,
-                'w',
+                'a',
                 encoding='utf-8',
                 errors='replace'
             )
@@ -2680,17 +2678,6 @@ def _logic_run_all_scripts(message_or_call):
         attempted_users += 1
         logger.info(f"Processing scripts for user {target_user_id}...")
         user_folder = get_user_folder(target_user_id)
-def is_user_joined_all(user_id):
-    """Check if user joined all required channels"""
-    try:
-        for ch in FORCE_JOIN_CHANNELS:
-            member = bot.get_chat_member(ch, user_id)
-            if member.status not in ['member', 'administrator', 'creator']:
-                return False
-        return True
-    except Exception as e:
-        logger.warning(f"Force join check error for {user_id}: {e}")
-        return False
 
         for file_name, file_type in files_for_user:
             if not is_bot_running(target_user_id, file_name):
