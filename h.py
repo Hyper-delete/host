@@ -65,12 +65,16 @@ def keep_alive():
 # --- End Flask Keep Alive ---
 
 # --- Configuration ---
-TOKEN = "8519854325:AAFXJei-TyPu9tw2XtNSu-Yot-l-jEQMSv4" #bot token dalo yeha
+TOKEN = "8610775864:AAFT-SmKaR0xZdm0JahmTtfMlg5rL9tFrv4" #bot token dalo yeha
 OWNER_ID = 7623391678 #yha tumhra chat id dalo
 ADMIN_ID = 8399044122 #yeha koi admin ya tumhara chat id dalo
 YOUR_USERNAME = '@ebfux' #yeha tumhra username dala
 UPDATE_CHANNEL = 'https://t.me/peaceerra' #yeha chnl link dalo''
 FORCE_JOIN_CHANNELS = {
+"@peaceerra":"𝐉𝐎𝐈𝐍",
+"@delete_py":"𝐉𝐎𝐈𝐍",
+"@peacevouch":"𝐉𝐎𝐈𝐍",
+"@deleteerra":"𝐉𝐎𝐈𝐍"
 }
 # Password protection
 BOT_PASSWORD = "pyg0d"   # Change this
